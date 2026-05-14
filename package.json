@@ -1,0 +1,55 @@
+{
+  "name": "@hamzatrq/openrouter-image-mcp",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server exposing OpenRouter image-generation models (Gemini, GPT-5 Image, and any other image-capable OpenRouter model) with typed per-model parameters.",
+  "type": "module",
+  "bin": {
+    "openrouter-image-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('dist/index.js', 0o755)\"",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "openrouter",
+    "image-generation",
+    "gemini",
+    "gpt-image",
+    "ai",
+    "claude"
+  ],
+  "author": "hamzatrq",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hamzatrq/openrouter-image-mcp.git"
+  },
+  "homepage": "https://github.com/hamzatrq/openrouter-image-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/hamzatrq/openrouter-image-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

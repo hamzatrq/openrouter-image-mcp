@@ -1,0 +1,12 @@
+src
+tsconfig.json
+.github
+.env
+.env.example
+.env.local
+generated-images
+*.log
+.DS_Store
+node_modules
+.gitignore
+.npmignore
