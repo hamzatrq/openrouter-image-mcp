@@ -23,9 +23,25 @@ export type GeneratedImage = {
   base64: string;
 };
 
+export type GenerationMetadata = {
+  /** OpenRouter response id (e.g. "gen-..."). Useful for support. */
+  id?: string;
+  /** Model identity returned by OpenRouter — may include a dated suffix. */
+  model?: string;
+  /** Underlying provider, if reported. */
+  provider?: string;
+  /** Token/credit usage when reported. */
+  usage?: unknown;
+  /** Wall-clock latency in ms for this call. */
+  latencyMs: number;
+  /** Finish reason from the chat completion (e.g. "stop"). */
+  finishReason?: string;
+};
+
 export type GenerateImageResult = {
   text: string;
   images: GeneratedImage[];
+  metadata: GenerationMetadata;
   raw: unknown;
 };
 
@@ -52,7 +68,7 @@ function guessMimeFromPath(p: string): string {
   return "image/png";
 }
 
-function parseDataUrl(url: string): GeneratedImage | null {
+export function parseDataUrl(url: string): GeneratedImage | null {
   const match = /^data:([^;]+);base64,(.+)$/s.exec(url);
   if (!match) return null;
   return { mimeType: match[1], base64: match[2] };
@@ -107,6 +123,7 @@ export async function generateImage(
   if (appTitle) headers["X-Title"] = appTitle;
 
   const endpoint = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+  const t0 = Date.now();
   const response = await fetch(endpoint, {
     method: "POST",
     headers,
@@ -114,6 +131,8 @@ export async function generateImage(
   });
 
   const rawText = await response.text();
+  const latencyMs = Date.now() - t0;
+
   if (!response.ok) {
     throw new Error(
       `OpenRouter request failed (${response.status} ${response.statusText}): ${rawText.slice(0, 2000)}`,
@@ -132,7 +151,8 @@ export async function generateImage(
     throw new Error(`OpenRouter error: ${message}`);
   }
 
-  const message = parsed?.choices?.[0]?.message ?? {};
+  const choice = parsed?.choices?.[0] ?? {};
+  const message = choice.message ?? {};
   const text =
     typeof message.content === "string"
       ? message.content
@@ -166,5 +186,14 @@ export async function generateImage(
     }
   }
 
-  return { text, images, raw: parsed };
+  const metadata: GenerationMetadata = {
+    id: typeof parsed?.id === "string" ? parsed.id : undefined,
+    model: typeof parsed?.model === "string" ? parsed.model : undefined,
+    provider: typeof parsed?.provider === "string" ? parsed.provider : undefined,
+    usage: parsed?.usage,
+    latencyMs,
+    finishReason: typeof choice?.finish_reason === "string" ? choice.finish_reason : undefined,
+  };
+
+  return { text, images, metadata, raw: parsed };
 }

@@ -17,10 +17,12 @@ export type ImageModel = {
   supportsImageInput: boolean;
   /** OpenRouter image_config keys this model is documented to accept. */
   acceptedImageConfig: ImageConfigKey[];
-  /** Enum of accepted aspect_ratio values. Empty/undefined = unknown, pass through. */
+  /** Enum of accepted aspect_ratio values. Undefined = unknown, pass through. */
   acceptedAspectRatios?: string[];
-  /** Enum of accepted image_size values. Empty/undefined = unknown, pass through. */
+  /** Enum of accepted image_size values. Undefined = unknown, pass through. */
   acceptedImageSizes?: string[];
+  /** True when this entry came from the live OpenRouter catalog but has no curated metadata. */
+  liveOnly?: boolean;
   notes?: string;
 };
 
@@ -58,7 +60,8 @@ const GPT54_IMAGE_SIZES = ["1K", "2K"];
 
 const UNIVERSAL_CONFIG_KEYS: ImageConfigKey[] = ["aspect_ratio", "image_size"];
 
-export const IMAGE_MODELS: ImageModel[] = [
+/** Hand-curated catalog with probe-verified acceptedAspectRatios/imageSizes. */
+export const HARDCODED_MODELS: ImageModel[] = [
   {
     id: "google/gemini-2.5-flash-image",
     label: "Gemini 2.5 Flash Image",
@@ -112,7 +115,7 @@ export const IMAGE_MODELS: ImageModel[] = [
     supportsImageInput: true,
     acceptedImageConfig: [],
     notes:
-      "GPT-5 image model. Does not appear to honor image_config; pass prompt-driven size/aspect cues instead.",
+      "GPT-5 image model. Does not appear to honor image_config; describe size/aspect in the prompt instead.",
   },
   {
     id: "openai/gpt-5-image-mini",
@@ -122,7 +125,7 @@ export const IMAGE_MODELS: ImageModel[] = [
     supportsImageInput: true,
     acceptedImageConfig: [],
     notes:
-      "Cheaper/faster GPT-5 image variant. Does not appear to honor image_config; pass prompt-driven size/aspect cues instead.",
+      "Cheaper/faster GPT-5 image variant. Does not appear to honor image_config.",
   },
   {
     id: "openrouter/auto",
@@ -132,14 +135,96 @@ export const IMAGE_MODELS: ImageModel[] = [
     supportsImageInput: true,
     acceptedImageConfig: [...UNIVERSAL_CONFIG_KEYS],
     notes:
-      "Auto-router: OpenRouter selects an image-capable model. Accepted aspect_ratio/image_size depend on which model gets picked.",
+      "Auto-router: OpenRouter selects an image-capable model. Accepted values depend on the chosen model.",
   },
 ];
 
 export const DEFAULT_MODEL_ID = "google/gemini-2.5-flash-image";
 
-export function findModel(id: string): ImageModel | undefined {
-  return IMAGE_MODELS.find((m) => m.id === id);
+type LiveModel = {
+  id: string;
+  name?: string;
+  architecture?: {
+    input_modalities?: string[];
+    output_modalities?: string[];
+  };
+};
+
+/** Fetch the current list of image-output models from OpenRouter. Never throws — returns [] on failure. */
+export async function fetchLiveImageModels(
+  baseUrl = "https://openrouter.ai/api/v1",
+  fetchImpl: typeof fetch = fetch,
+): Promise<LiveModel[]> {
+  try {
+    const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/models`);
+    if (!res.ok) return [];
+    const body = (await res.json()) as { data?: LiveModel[] };
+    const all = body.data ?? [];
+    return all.filter((m) => m.architecture?.output_modalities?.includes("image"));
+  } catch {
+    return [];
+  }
+}
+
+/** Merge a live model list with the hardcoded catalog. Live IDs win for existence; hardcoded wins for curated metadata. */
+export function mergeCatalog(live: LiveModel[], hardcoded: ImageModel[]): ImageModel[] {
+  const byId = new Map(hardcoded.map((m) => [m.id, m]));
+  const out: ImageModel[] = [];
+  const seen = new Set<string>();
+
+  for (const lm of live) {
+    seen.add(lm.id);
+    const curated = byId.get(lm.id);
+    if (curated) {
+      out.push(curated);
+    } else {
+      const supportsImageInput =
+        lm.architecture?.input_modalities?.includes("image") ?? false;
+      out.push({
+        id: lm.id,
+        label: lm.name ?? lm.id,
+        provider: lm.id.split("/")[0] ?? "unknown",
+        modalities: ["image", "text"],
+        supportsImageInput,
+        acceptedImageConfig: [...UNIVERSAL_CONFIG_KEYS],
+        liveOnly: true,
+        notes:
+          "Discovered via live OpenRouter catalog. Accepted aspect_ratio / image_size values not curated — pass-through validation.",
+      });
+    }
+  }
+
+  if (out.length === 0) {
+    return hardcoded;
+  }
+
+  for (const hm of hardcoded) {
+    if (!seen.has(hm.id) && hm.id === "openrouter/auto") {
+      out.push(hm);
+    }
+  }
+
+  return out;
+}
+
+/** Top-level loader: tries the live API, falls back to hardcoded catalog. */
+export async function loadCatalog(opts: {
+  baseUrl?: string;
+  autoSync?: boolean;
+  fetchImpl?: typeof fetch;
+} = {}): Promise<{ models: ImageModel[]; source: "live" | "hardcoded" }> {
+  if (opts.autoSync === false) {
+    return { models: HARDCODED_MODELS, source: "hardcoded" };
+  }
+  const live = await fetchLiveImageModels(opts.baseUrl, opts.fetchImpl);
+  if (live.length === 0) {
+    return { models: HARDCODED_MODELS, source: "hardcoded" };
+  }
+  return { models: mergeCatalog(live, HARDCODED_MODELS), source: "live" };
+}
+
+export function findModel(models: ImageModel[], id: string): ImageModel | undefined {
+  return models.find((m) => m.id === id);
 }
 
 export const IMAGE_CONFIG_DOCS: Record<ImageConfigKey, string> = {
@@ -158,10 +243,10 @@ export const IMAGE_CONFIG_DOCS: Record<ImageConfigKey, string> = {
     "Up to 4 reference image URLs that enhance low-quality elements. Sourceful only.",
 };
 
-/** Concise per-model accepted-value summary, suitable for embedding in tool descriptions. */
-export function buildModelParamSummary(): string {
+/** Concise per-model summary, suitable for embedding in tool descriptions. */
+export function buildModelParamSummary(models: ImageModel[]): string {
   const lines: string[] = [];
-  for (const m of IMAGE_MODELS) {
+  for (const m of models) {
     const ar = m.acceptedAspectRatios?.join(", ") ?? "(unknown — pass-through)";
     const sz = m.acceptedImageSizes?.join(", ") ?? "(unknown — pass-through)";
     if (m.acceptedImageConfig.length === 0) {

@@ -8,13 +8,15 @@ Unlike a thin wrapper, this server exposes **typed, per-model parameters** so th
 
 ## Features
 
-- One stdio MCP server, every OpenRouter image model.
-- Typed `imageConfig` surface mirroring OpenRouter's standardized `image_config` (`aspectRatio`, `imageSize`, `strength`, `style`, `rgbColors`, `backgroundRgbColor`, `textLayout`, `fontInputs`, `superResolutionReferences`).
-- Per-model validation — passes are routed, mismatches are rejected with the accepted-key list.
-- Image-to-image via local file path, URL, or base64.
-- Returns generated images **both** as inline MCP image content **and** as saved files on disk (path returned).
-- Discovery tool (`list_image_models`) the LLM can call to introspect supported models and their accepted parameters.
-- Escape hatch (`extra` / `extra.image_config`) for anything not yet typed.
+- **Every OpenRouter image model** through one MCP server. Stdio or HTTP transport.
+- **Auto-sync catalog** at startup — fetches the live OpenRouter model list and merges it with the curated metadata. Falls back to hardcoded on failure.
+- **Typed per-model parameters** — `aspectRatio`, `imageSize`, plus Recraft/Sourceful keys (`strength`, `style`, `rgbColors`, …) — with per-model validation, so the calling LLM sees the **actual accepted values** in `tools/list` and never has to retry to discover them.
+- **Batch generation** via `count: 1..8` — parallel fan-out with progress notifications between completions.
+- **Image-to-image** via local file path, URL, or base64.
+- **Returns images both ways**: saved to disk (path returned) and inline as MCP image content.
+- **Returns metadata**: generation id, dated model name, provider, latency, and OpenRouter `usage` (including cost).
+- **Discovery tool** `list_image_models` for programmatic introspection.
+- **Escape hatch** (`extra` / `extra.image_config`) for anything not yet typed.
 
 ---
 
@@ -52,6 +54,11 @@ Environment variables:
 | `OPENROUTER_BASE_URL` | no | `https://openrouter.ai/api/v1` | Override for proxies / staging. |
 | `OPENROUTER_HTTP_REFERER` | no | — | Sent as `HTTP-Referer` header — used by OpenRouter for app attribution. |
 | `OPENROUTER_APP_TITLE` | no | — | Sent as `X-Title` header — app name shown on the OpenRouter dashboard. |
+| `AUTO_SYNC_CATALOG` | no | `true` | Set to `false` to skip the startup catalog fetch and use the bundled hardcoded list. |
+| `TRANSPORT` | no | `stdio` | `stdio` or `http`. See [Hosting over HTTP](#hosting-over-http). |
+| `PORT` | no | `3000` | HTTP transport only. |
+| `HOST` | no | `0.0.0.0` | HTTP transport only. |
+| `MCP_PATH` | no | `/mcp` | HTTP transport only — path the streamable HTTP transport listens on. |
 
 A `.env.example` is included; copy it to `.env` for local development. The server itself does **not** auto-load `.env` — set the variables in the MCP client's config (see below).
 
@@ -125,14 +132,17 @@ No arguments. Returns the curated model catalog (id, provider, modalities, `supp
 | --- | --- | --- | --- |
 | `prompt` | `string` | yes | Description of the desired image. |
 | `model` | `string` | no | Any OpenRouter image-capable slug. Defaults to `google/gemini-2.5-flash-image`. |
+| `count` | `number` (1-8) | no | Number of independent images to fan out in parallel. Each is a separate OpenRouter call. Defaults to `1`. |
 | `inputImages` | `Array<{url} \| {path} \| {base64,mimeType?}>` | no | Source images for image-to-image. Requires a model with `supportsImageInput: true`. |
 | `imageConfig` | `object` | no | Typed `image_config` knobs — see table below. |
 | `modalities` | `Array<"image" \| "text">` | no | Defaults to the chosen model's declared modalities. |
 | `extra` | `Record<string, unknown>` | no | Escape hatch merged into the request body. Use `extra.image_config` for `image_config` keys not yet typed. |
 
 **Returns:** an MCP content array containing
-1. a JSON text block with `{ model, savedPaths, text }`, followed by
+1. a JSON text block with `{ model, requested, succeeded, failed, savedPaths, metadata, text, errors? }` — `metadata` is an array (one per fan-out call) of `{ id, model, provider, usage, latencyMs, finishReason }` and `usage` includes OpenRouter's `cost` field, followed by
 2. one `type: "image"` content block per generated image (base64).
+
+When the caller supplies an MCP `progressToken`, the server emits a `notifications/progress` message after each image in the batch finishes — useful for long fan-outs.
 
 #### `imageConfig` parameters
 
@@ -209,11 +219,27 @@ You can also pass any OpenRouter image-capable slug not in this list — validat
 
 ---
 
+## Hosting over HTTP
+
+The server also speaks MCP's Streamable HTTP transport, so you can host it on Vercel / Fly / Railway / your own box and let multiple machines share it.
+
+```bash
+TRANSPORT=http PORT=3000 OPENROUTER_API_KEY=sk-or-v1-... \
+  npx @hamzatrq/openrouter-image-mcp
+```
+
+Endpoints:
+- `POST /mcp` (configurable via `MCP_PATH`) — the Streamable HTTP transport. Send MCP JSON-RPC; responses stream as SSE events.
+- `GET /healthz` — returns `{ ok, version, catalogSource }`.
+
+MCP clients that support remote servers (Claude Desktop's [remote servers](https://modelcontextprotocol.io/docs/concepts/transports), or anything using `StreamableHTTPClientTransport`) can point at `http://your-host:3000/mcp`.
+
 ## Development
 
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
+npm test            # node --test (uses tsx)
 npm run build       # compile to dist/ and chmod +x the bin
 npm run dev         # tsc --watch
 ```
