@@ -60,6 +60,41 @@ Environment variables:
 | `HOST` | no | `0.0.0.0` | HTTP transport only. |
 | `MCP_PATH` | no | `/mcp` | HTTP transport only — path the streamable HTTP transport listens on. |
 
+### Operator policy (lock the MCP down for safe agent use)
+
+Optional knobs the operator (you, setting up the MCP) can use to constrain what the agent is allowed to do. All are read at startup, surfaced in the tool description / `instructions` so the agent knows about them, and enforced before any OpenRouter call.
+
+| Env var | Effect |
+| --- | --- |
+| `ALLOWED_MODELS` | CSV of model IDs the agent may use. Filters `list_image_models` and the per-model summary in the tool description; rejects calls with other models. |
+| `DEFAULT_MODEL` | Override the built-in default model. Must be in `ALLOWED_MODELS` if both are set, else startup fails. |
+| `MAX_COUNT` | Cap on `count` (default 8, hard ceiling 32). The schema's `maximum` shrinks so agents see the new cap in `tools/list`. |
+| `DEFAULT_ASPECT_RATIO` | Applied when the agent omits `imageConfig.aspectRatio`. |
+| `DEFAULT_IMAGE_SIZE` | Applied when the agent omits `imageConfig.imageSize`. |
+| `LOCK_IMAGE_CONFIG` | CSV of locked keys (`aspectRatio`, `imageSize`). When locked, agent attempts to pass the key are rejected and the operator's default is always used. |
+| `OPERATOR_NOTES` | Free-text shown to the agent via the server's MCP `instructions` and prepended to the tool description. Use it to explain the policy. |
+
+Example — cheap-mode lockdown (1K Gemini only, max 2 images per call):
+
+```json
+{
+  "mcpServers": {
+    "openrouter-image": {
+      "command": "npx",
+      "args": ["-y", "@hamzatrq/openrouter-image-mcp"],
+      "env": {
+        "OPENROUTER_API_KEY": "sk-or-v1-...",
+        "ALLOWED_MODELS": "google/gemini-2.5-flash-image",
+        "MAX_COUNT": "2",
+        "DEFAULT_IMAGE_SIZE": "1K",
+        "LOCK_IMAGE_CONFIG": "imageSize",
+        "OPERATOR_NOTES": "Cheap-mode preset — agents must use 1K only."
+      }
+    }
+  }
+}
+```
+
 A `.env.example` is included; copy it to `.env` for local development. The server itself does **not** auto-load `.env` — set the variables in the MCP client's config (see below).
 
 ---

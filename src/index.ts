@@ -4,8 +4,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { loadCatalog } from "./models.js";
 import { createServer } from "./server.js";
+import { loadOperatorConfig } from "./config.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -23,14 +24,25 @@ async function main() {
   const baseUrl = process.env.OPENROUTER_BASE_URL?.trim() || "https://openrouter.ai/api/v1";
   const transport = (process.env.TRANSPORT || "stdio").toLowerCase();
 
+  const operatorConfig = loadOperatorConfig();
   const t0 = Date.now();
   const { models, source } = await loadCatalog({ autoSync, baseUrl });
   console.error(
     `openrouter-image-mcp v${VERSION}: catalog loaded (${source}, ${models.length} models, ${Date.now() - t0}ms)`,
   );
+  if (operatorConfig.allowedModels.length > 0) {
+    console.error(
+      `Operator allowlist active: ${operatorConfig.allowedModels.join(", ")}`,
+    );
+  }
 
   const makeMcp = () =>
-    createServer({ catalog: models, catalogSource: source, serverVersion: VERSION });
+    createServer({
+      catalog: models,
+      catalogSource: source,
+      serverVersion: VERSION,
+      operatorConfig,
+    });
 
   if (transport === "http") {
     const port = Number(process.env.PORT ?? 3000);

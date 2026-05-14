@@ -1,6 +1,6 @@
 {
   "name": "@hamzatrq/openrouter-image-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Model Context Protocol server exposing OpenRouter image-generation models (Gemini, GPT-5 Image, and any other image-capable OpenRouter model) with typed per-model parameters.",
   "type": "module",
   "bin": {

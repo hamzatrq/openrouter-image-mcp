@@ -13,6 +13,11 @@ import {
   type ImageConfigKey,
   type ImageModel,
 } from "./models.js";
+import {
+  describeOperatorRestrictions,
+  type LockableKey,
+  type OperatorConfig,
+} from "./config.js";
 import { resolveOutputDir, saveImage } from "./storage.js";
 
 type Env = {
@@ -62,32 +67,34 @@ const rgbTuple = z
   ])
   .describe("[r, g, b] integers 0-255");
 
-const imageConfigSchema = z
-  .object({
-    aspectRatio: z
-      .string()
-      .regex(/^\d+:\d+$/, 'Use "W:H" format like "1:1", "16:9", "2:3".')
-      .optional()
-      .describe(IMAGE_CONFIG_DOCS.aspect_ratio),
-    imageSize: z
-      .enum(["0.5K", "1K", "2K", "4K"])
-      .optional()
-      .describe(IMAGE_CONFIG_DOCS.image_size),
-    strength: z.number().min(0).max(1).optional().describe(IMAGE_CONFIG_DOCS.strength),
-    style: z.string().optional().describe(IMAGE_CONFIG_DOCS.style),
-    rgbColors: z.array(rgbTuple).optional().describe(IMAGE_CONFIG_DOCS.rgb_colors),
-    backgroundRgbColor: rgbTuple.optional().describe(IMAGE_CONFIG_DOCS.background_rgb_color),
-    textLayout: z.unknown().optional().describe(IMAGE_CONFIG_DOCS.text_layout),
-    fontInputs: z.unknown().optional().describe(IMAGE_CONFIG_DOCS.font_inputs),
-    superResolutionReferences: z
-      .array(z.string().url())
-      .max(4)
-      .optional()
-      .describe(IMAGE_CONFIG_DOCS.super_resolution_references),
-  })
-  .strict();
+function buildImageConfigSchema() {
+  return z
+    .object({
+      aspectRatio: z
+        .string()
+        .regex(/^\d+:\d+$/, 'Use "W:H" format like "1:1", "16:9", "2:3".')
+        .optional()
+        .describe(IMAGE_CONFIG_DOCS.aspect_ratio),
+      imageSize: z
+        .enum(["0.5K", "1K", "2K", "4K"])
+        .optional()
+        .describe(IMAGE_CONFIG_DOCS.image_size),
+      strength: z.number().min(0).max(1).optional().describe(IMAGE_CONFIG_DOCS.strength),
+      style: z.string().optional().describe(IMAGE_CONFIG_DOCS.style),
+      rgbColors: z.array(rgbTuple).optional().describe(IMAGE_CONFIG_DOCS.rgb_colors),
+      backgroundRgbColor: rgbTuple.optional().describe(IMAGE_CONFIG_DOCS.background_rgb_color),
+      textLayout: z.unknown().optional().describe(IMAGE_CONFIG_DOCS.text_layout),
+      fontInputs: z.unknown().optional().describe(IMAGE_CONFIG_DOCS.font_inputs),
+      superResolutionReferences: z
+        .array(z.string().url())
+        .max(4)
+        .optional()
+        .describe(IMAGE_CONFIG_DOCS.super_resolution_references),
+    })
+    .strict();
+}
 
-type ImageConfigInput = z.infer<typeof imageConfigSchema>;
+type ImageConfigInput = z.infer<ReturnType<typeof buildImageConfigSchema>>;
 
 const CAMEL_TO_SNAKE: Record<keyof ImageConfigInput, ImageConfigKey> = {
   aspectRatio: "aspect_ratio",
@@ -167,31 +174,111 @@ export function validateAgainstModel(
   return { ok: true };
 }
 
+/** Apply operator allowlist + lock policy. Returns either a (possibly mutated) imageConfig or a failure. */
+export function applyOperatorPolicy(
+  config: OperatorConfig,
+  filteredCatalog: ImageModel[],
+  args: {
+    modelId: string;
+    imageConfig: ImageConfigInput | undefined;
+  },
+): ValidationFailure | { ok: true; imageConfig: ImageConfigInput | undefined } {
+  if (config.allowedModels.length > 0 && !config.allowedModels.includes(args.modelId)) {
+    return {
+      ok: false,
+      reason: `Model "${args.modelId}" is not in the operator-allowed set. Allowed: ${config.allowedModels.join(", ")}.`,
+    };
+  }
+
+  const incoming = args.imageConfig ?? {};
+  for (const key of ["aspectRatio", "imageSize"] as LockableKey[]) {
+    if (config.lockedImageConfig.has(key) && incoming[key] !== undefined) {
+      const lockedValue = config.defaultImageConfig[key];
+      return {
+        ok: false,
+        reason: lockedValue
+          ? `Operator has locked ${key} to "${lockedValue}". Do not provide this field.`
+          : `Operator has locked ${key} and not set a default. Do not provide this field; the request cannot be made until the operator sets DEFAULT_${key === "aspectRatio" ? "ASPECT_RATIO" : "IMAGE_SIZE"}.`,
+      };
+    }
+  }
+
+  const merged: ImageConfigInput = { ...incoming };
+  for (const key of ["aspectRatio", "imageSize"] as LockableKey[]) {
+    if (merged[key] === undefined && config.defaultImageConfig[key]) {
+      (merged as Record<string, unknown>)[key] = config.defaultImageConfig[key];
+    }
+  }
+
+  const hasAny = Object.values(merged).some((v) => v !== undefined);
+  return { ok: true, imageConfig: hasAny ? merged : undefined };
+}
+
 export type ServerDeps = {
   catalog: ImageModel[];
   catalogSource: "live" | "hardcoded";
   serverVersion: string;
+  operatorConfig: OperatorConfig;
 };
 
+function pickEffectiveDefaultModel(
+  catalog: ImageModel[],
+  config: OperatorConfig,
+): string {
+  if (config.defaultModel && catalog.some((m) => m.id === config.defaultModel)) {
+    return config.defaultModel;
+  }
+  if (catalog.some((m) => m.id === DEFAULT_MODEL_ID)) {
+    return DEFAULT_MODEL_ID;
+  }
+  return catalog[0]?.id ?? DEFAULT_MODEL_ID;
+}
+
 export function createServer(deps: ServerDeps): McpServer {
-  const { catalog, catalogSource, serverVersion } = deps;
+  const { catalog, catalogSource, serverVersion, operatorConfig } = deps;
+
+  const filteredCatalog =
+    operatorConfig.allowedModels.length > 0
+      ? catalog.filter((m) => operatorConfig.allowedModels.includes(m.id))
+      : catalog;
+
+  if (filteredCatalog.length === 0) {
+    throw new Error(
+      `ALLOWED_MODELS resolved to an empty set against the available catalog (${catalog.map((m) => m.id).join(", ")}).`,
+    );
+  }
+
+  if (
+    operatorConfig.defaultModel &&
+    !filteredCatalog.some((m) => m.id === operatorConfig.defaultModel)
+  ) {
+    throw new Error(
+      `DEFAULT_MODEL="${operatorConfig.defaultModel}" is not in ALLOWED_MODELS / live catalog. Available: ${filteredCatalog.map((m) => m.id).join(", ")}.`,
+    );
+  }
+
+  const effectiveDefaultModel = pickEffectiveDefaultModel(filteredCatalog, operatorConfig);
+  const restrictionsSummary = describeOperatorRestrictions(operatorConfig);
+
+  const instructions = [
+    "Generates images via OpenRouter.",
+    `Catalog source: ${catalogSource}.`,
+    "Tool description embeds per-model accepted imageConfig values. Use them verbatim.",
+    restrictionsSummary ? `Operator policy: ${restrictionsSummary}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const server = new McpServer(
     { name: "openrouter-image-mcp", version: serverVersion },
-    {
-      instructions: [
-        "Generates images via OpenRouter.",
-        `Catalog source: ${catalogSource}.`,
-        "Tool description embeds per-model accepted imageConfig values. Use them verbatim.",
-      ].join(" "),
-    },
+    { instructions },
   );
 
   server.registerTool(
     "list_image_models",
     {
       description:
-        "List supported image-generation models with their accepted imageConfig keys, allowed aspect ratios, allowed image sizes, and whether they accept image input.",
+        "List supported image-generation models (after operator allowlist) with their accepted imageConfig keys, allowed aspect ratios, allowed image sizes, and whether they accept image input.",
       inputSchema: {},
     },
     async () => ({
@@ -200,10 +287,11 @@ export function createServer(deps: ServerDeps): McpServer {
           type: "text",
           text: JSON.stringify(
             {
-              defaultModel: DEFAULT_MODEL_ID,
+              defaultModel: effectiveDefaultModel,
               catalogSource,
+              operatorRestrictions: restrictionsSummary,
               imageConfigDocs: IMAGE_CONFIG_DOCS,
-              models: catalog,
+              models: filteredCatalog,
             },
             null,
             2,
@@ -213,84 +301,98 @@ export function createServer(deps: ServerDeps): McpServer {
     }),
   );
 
+  const imageConfigSchema = buildImageConfigSchema();
+
   server.registerTool(
     "generate_image",
     {
       description: [
         "Generate (or edit) image(s) via OpenRouter. Returns saved file paths plus inline image content and metadata.",
         "",
+        restrictionsSummary ? `OPERATOR POLICY: ${restrictionsSummary}` : "",
+        restrictionsSummary ? "" : null,
         "Each model only accepts specific imageConfig values. Do NOT guess — use these:",
         "",
-        buildModelParamSummary(catalog),
+        buildModelParamSummary(filteredCatalog),
         "",
-        "Use `count` to generate multiple variations in parallel (1-8).",
+        `Use \`count\` to generate multiple variations in parallel (1-${operatorConfig.maxCount}).`,
         "For image-to-image, pass `inputImages` (only on models with supportsImageInput=true).",
         "Call `list_image_models` for a programmatic view of the same data.",
-      ].join("\n"),
+      ]
+        .filter((x): x is string => x !== null)
+        .join("\n"),
       inputSchema: {
         prompt: z.string().min(1).describe("Text prompt describing the desired image."),
         model: z
           .string()
           .optional()
           .describe(
-            `OpenRouter model ID. Any image-capable slug works; call list_image_models for the curated set. Defaults to ${DEFAULT_MODEL_ID}.`,
+            `OpenRouter model ID. Defaults to ${effectiveDefaultModel}.${
+              operatorConfig.allowedModels.length > 0
+                ? ` Allowed: ${operatorConfig.allowedModels.join(", ")}.`
+                : ""
+            }`,
           ),
         count: z
           .number()
           .int()
           .min(1)
-          .max(8)
+          .max(operatorConfig.maxCount)
           .optional()
           .describe(
-            "Number of independent images to generate in parallel (1-8). Each is a separate OpenRouter call. Defaults to 1.",
+            `Number of independent images to generate in parallel (1-${operatorConfig.maxCount}). Defaults to 1.`,
           ),
         inputImages: z
           .array(inputImageSchema)
           .optional()
           .describe(
-            "Reference/source images for image-to-image. Each entry is one of { url } | { path } | { base64, mimeType? }. Only works on models with supportsImageInput=true.",
+            "Reference/source images for image-to-image. Each entry is { url } | { path } | { base64, mimeType? }. Only works on supportsImageInput=true models.",
           ),
         imageConfig: imageConfigSchema
           .optional()
           .describe(
-            "Standardized OpenRouter image_config knobs. Server validates each provided key/value against the chosen model.",
+            "Standardized OpenRouter image_config knobs. Server validates each provided key/value against the chosen model and operator policy.",
           ),
         modalities: z
           .array(z.enum(["image", "text"]))
           .optional()
-          .describe(
-            "Override response modalities. Defaults to ['image','text'] for multimodal models, ['image'] for image-only ones.",
-          ),
+          .describe("Override response modalities. Defaults to the model's declared modalities."),
         extra: z
           .record(z.unknown())
           .optional()
           .describe(
-            "Escape hatch: extra top-level fields merged into the OpenRouter request body. Use `extra.image_config` for image_config keys not yet typed here.",
+            "Escape hatch: extra top-level fields merged into the OpenRouter request body.",
           ),
       },
     },
     async ({ prompt, model, count, inputImages, imageConfig, modalities, extra }, extraCtx) => {
       const env = readEnv();
-      const modelId = model?.trim() || DEFAULT_MODEL_ID;
-      const known = findModel(catalog, modelId);
-      const { wire: imageConfigWire, usedKeys } = buildImageConfigWire(imageConfig);
+      const modelId = model?.trim() || effectiveDefaultModel;
+
+      const policy = applyOperatorPolicy(operatorConfig, filteredCatalog, {
+        modelId,
+        imageConfig,
+      });
+      if (!policy.ok) {
+        return { isError: true, content: [{ type: "text", text: policy.reason }] };
+      }
+      const effectiveImageConfig = policy.imageConfig;
+
+      const known = findModel(filteredCatalog, modelId);
+      const { wire: imageConfigWire, usedKeys } = buildImageConfigWire(effectiveImageConfig);
 
       const validation = validateAgainstModel(known, {
         keys: usedKeys,
-        aspectRatio: imageConfig?.aspectRatio,
-        imageSize: imageConfig?.imageSize,
+        aspectRatio: effectiveImageConfig?.aspectRatio,
+        imageSize: effectiveImageConfig?.imageSize,
         hasInputImages: Boolean(inputImages && inputImages.length > 0),
       });
       if (!validation.ok) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: validation.reason }],
-        };
+        return { isError: true, content: [{ type: "text", text: validation.reason }] };
       }
 
       const resolvedModalities =
         modalities ?? (known?.modalities ? [...known.modalities] : ["image", "text"]);
-
       const n = count ?? 1;
       const progressToken = extraCtx?._meta?.progressToken;
       const sendNotification = extraCtx?.sendNotification;
@@ -317,9 +419,7 @@ export function createServer(deps: ServerDeps): McpServer {
               total: n,
               message: `Generated ${idx + 1}/${n} (${r.metadata.latencyMs}ms)`,
             },
-          }).catch(() => {
-            /* notification failures shouldn't fail the call */
-          });
+          }).catch(() => {});
         }
         return r;
       });
@@ -371,10 +471,11 @@ export function createServer(deps: ServerDeps): McpServer {
         failed: failures.length,
         savedPaths,
         metadata: successes.map((r) => r.metadata),
-        text: successes
-          .map((r) => r.text)
-          .filter((t) => t)
-          .join("\n---\n") || undefined,
+        text:
+          successes
+            .map((r) => r.text)
+            .filter((t) => t)
+            .join("\n---\n") || undefined,
         errors: failures.length > 0 ? failures : undefined,
       };
 
