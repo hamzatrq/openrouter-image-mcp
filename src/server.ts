@@ -5,6 +5,7 @@ import {
   DEFAULT_MODEL_ID,
   IMAGE_CONFIG_DOCS,
   IMAGE_MODELS,
+  buildModelParamSummary,
   findModel,
   type ImageConfigKey,
 } from "./models.js";
@@ -154,8 +155,16 @@ export function createServer(): McpServer {
   server.registerTool(
     "generate_image",
     {
-      description:
-        "Generate (or edit) an image via OpenRouter. Pass a prompt and an optional model + imageConfig. Each model only accepts a subset of imageConfig keys — call list_image_models for the per-model accepted set. Returns saved file paths plus inline image content.",
+      description: [
+        "Generate (or edit) an image via OpenRouter. Returns saved file paths plus inline image content.",
+        "",
+        "Each model only accepts a specific set of imageConfig values. Do NOT guess — use these:",
+        "",
+        buildModelParamSummary(),
+        "",
+        "For image-to-image, pass `inputImages` (only on models with supportsImageInput=true).",
+        "Call `list_image_models` if you need a programmatic view of the same data.",
+      ].join("\n"),
       inputSchema: {
         prompt: z.string().min(1).describe("Text prompt describing the desired image."),
         model: z
@@ -206,7 +215,41 @@ export function createServer(): McpServer {
                 type: "text",
                 text: `Model ${modelId} does not accept these imageConfig keys: ${rejected.join(
                   ", ",
-                )}. Accepted keys for this model: ${known.acceptedImageConfig.join(", ") || "(none)"}.`,
+                )}. Accepted keys for this model: ${known.acceptedImageConfig.join(", ") || "(none — pass image_config-less requests, or use extra)"}.`,
+              },
+            ],
+          };
+        }
+
+        const ar = imageConfig?.aspectRatio;
+        if (
+          typeof ar === "string" &&
+          known.acceptedAspectRatios &&
+          !known.acceptedAspectRatios.includes(ar)
+        ) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `Model ${modelId} does not accept aspectRatio "${ar}". Accepted: ${known.acceptedAspectRatios.join(", ")}.`,
+              },
+            ],
+          };
+        }
+
+        const sz = imageConfig?.imageSize;
+        if (
+          typeof sz === "string" &&
+          known.acceptedImageSizes &&
+          !known.acceptedImageSizes.includes(sz)
+        ) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `Model ${modelId} does not accept imageSize "${sz}". Accepted: ${known.acceptedImageSizes.join(", ")}.`,
               },
             ],
           };

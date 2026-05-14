@@ -17,10 +17,46 @@ export type ImageModel = {
   supportsImageInput: boolean;
   /** OpenRouter image_config keys this model is documented to accept. */
   acceptedImageConfig: ImageConfigKey[];
+  /** Enum of accepted aspect_ratio values. Empty/undefined = unknown, pass through. */
+  acceptedAspectRatios?: string[];
+  /** Enum of accepted image_size values. Empty/undefined = unknown, pass through. */
+  acceptedImageSizes?: string[];
   notes?: string;
 };
 
-const UNIVERSAL: ImageConfigKey[] = ["aspect_ratio", "image_size"];
+const GEMINI_ASPECT_RATIOS = [
+  "1:1",
+  "1:4",
+  "1:8",
+  "2:3",
+  "3:2",
+  "3:4",
+  "4:1",
+  "4:3",
+  "4:5",
+  "5:4",
+  "8:1",
+  "9:16",
+  "16:9",
+  "21:9",
+];
+const GEMINI_IMAGE_SIZES = ["0.5K", "1K", "2K", "4K"];
+
+const GPT54_ASPECT_RATIOS = [
+  "1:1",
+  "2:3",
+  "3:2",
+  "3:4",
+  "4:3",
+  "4:5",
+  "5:4",
+  "9:16",
+  "16:9",
+  "21:9",
+];
+const GPT54_IMAGE_SIZES = ["1K", "2K"];
+
+const UNIVERSAL_CONFIG_KEYS: ImageConfigKey[] = ["aspect_ratio", "image_size"];
 
 export const IMAGE_MODELS: ImageModel[] = [
   {
@@ -29,8 +65,10 @@ export const IMAGE_MODELS: ImageModel[] = [
     provider: "Google",
     modalities: ["image", "text"],
     supportsImageInput: true,
-    acceptedImageConfig: [...UNIVERSAL],
-    notes: "General-purpose text-to-image and image editing. Returns text + image.",
+    acceptedImageConfig: [...UNIVERSAL_CONFIG_KEYS],
+    acceptedAspectRatios: [...GEMINI_ASPECT_RATIOS],
+    acceptedImageSizes: [...GEMINI_IMAGE_SIZES],
+    notes: "General-purpose text-to-image and image editing.",
   },
   {
     id: "google/gemini-3-pro-image-preview",
@@ -38,7 +76,9 @@ export const IMAGE_MODELS: ImageModel[] = [
     provider: "Google",
     modalities: ["image", "text"],
     supportsImageInput: true,
-    acceptedImageConfig: [...UNIVERSAL],
+    acceptedImageConfig: [...UNIVERSAL_CONFIG_KEYS],
+    acceptedAspectRatios: [...GEMINI_ASPECT_RATIOS],
+    acceptedImageSizes: [...GEMINI_IMAGE_SIZES],
     notes: "Gemini 3 Pro image model on the preview channel.",
   },
   {
@@ -47,8 +87,10 @@ export const IMAGE_MODELS: ImageModel[] = [
     provider: "Google",
     modalities: ["image", "text"],
     supportsImageInput: true,
-    acceptedImageConfig: [...UNIVERSAL],
-    notes: "Newer Gemini Flash image model on the preview channel.",
+    acceptedImageConfig: [...UNIVERSAL_CONFIG_KEYS],
+    acceptedAspectRatios: [...GEMINI_ASPECT_RATIOS],
+    acceptedImageSizes: [...GEMINI_IMAGE_SIZES],
+    notes: "Gemini 3.1 Flash image model on the preview channel.",
   },
   {
     id: "openai/gpt-5.4-image-2",
@@ -56,8 +98,11 @@ export const IMAGE_MODELS: ImageModel[] = [
     provider: "OpenAI",
     modalities: ["image", "text"],
     supportsImageInput: true,
-    acceptedImageConfig: [...UNIVERSAL],
-    notes: "OpenAI's latest image model. Accepts image + text + file input.",
+    acceptedImageConfig: [...UNIVERSAL_CONFIG_KEYS],
+    acceptedAspectRatios: [...GPT54_ASPECT_RATIOS],
+    acceptedImageSizes: [...GPT54_IMAGE_SIZES],
+    notes:
+      "OpenAI's latest image model. Note: only accepts 1K/2K image_size — not 0.5K or 4K.",
   },
   {
     id: "openai/gpt-5-image",
@@ -65,8 +110,9 @@ export const IMAGE_MODELS: ImageModel[] = [
     provider: "OpenAI",
     modalities: ["image", "text"],
     supportsImageInput: true,
-    acceptedImageConfig: [...UNIVERSAL],
-    notes: "GPT-5 image model. Supports image input for edits.",
+    acceptedImageConfig: [],
+    notes:
+      "GPT-5 image model. Does not appear to honor image_config; pass prompt-driven size/aspect cues instead.",
   },
   {
     id: "openai/gpt-5-image-mini",
@@ -74,8 +120,9 @@ export const IMAGE_MODELS: ImageModel[] = [
     provider: "OpenAI",
     modalities: ["image", "text"],
     supportsImageInput: true,
-    acceptedImageConfig: [...UNIVERSAL],
-    notes: "Cheaper/faster GPT-5 image variant.",
+    acceptedImageConfig: [],
+    notes:
+      "Cheaper/faster GPT-5 image variant. Does not appear to honor image_config; pass prompt-driven size/aspect cues instead.",
   },
   {
     id: "openrouter/auto",
@@ -83,8 +130,9 @@ export const IMAGE_MODELS: ImageModel[] = [
     provider: "OpenRouter",
     modalities: ["image", "text"],
     supportsImageInput: true,
-    acceptedImageConfig: [...UNIVERSAL],
-    notes: "Auto-router: OpenRouter selects an image-capable model. Use when you don't care which.",
+    acceptedImageConfig: [...UNIVERSAL_CONFIG_KEYS],
+    notes:
+      "Auto-router: OpenRouter selects an image-capable model. Accepted aspect_ratio/image_size depend on which model gets picked.",
   },
 ];
 
@@ -96,21 +144,33 @@ export function findModel(id: string): ImageModel | undefined {
 
 export const IMAGE_CONFIG_DOCS: Record<ImageConfigKey, string> = {
   aspect_ratio:
-    'Aspect ratio of the output image as "W:H" (e.g. "1:1", "16:9", "2:3", "3:2"). Universal across image-generation models on OpenRouter.',
+    'Aspect ratio as "W:H". Accepted values are per-model — see acceptedAspectRatios in list_image_models.',
   image_size:
-    'Output resolution tier. One of "0.5K", "1K", "2K", "4K". Universal across image-generation models on OpenRouter.',
+    'Output resolution tier. Accepted values are per-model — see acceptedImageSizes in list_image_models.',
   strength:
-    "Image-to-image strength in [0.0, 1.0]. Lower values stay closer to the input image. Recraft only.",
-  style:
-    "Artistic style preset name. Recraft V3 only.",
-  rgb_colors:
-    "Palette of RGB colors that should influence the output. Recraft only.",
-  background_rgb_color:
-    "Specific background color in RGB. Recraft only.",
-  text_layout:
-    "Structured spec for placing text at positions on the image. Recraft V3 only.",
-  font_inputs:
-    "Custom font specs for text rendering. Sourceful only.",
+    "Image-to-image strength in [0.0, 1.0]. Lower values stay closer to the input. Recraft only.",
+  style: "Artistic style preset name. Recraft V3 only.",
+  rgb_colors: "Palette of RGB colors that should influence the output. Recraft only.",
+  background_rgb_color: "Specific background color in RGB. Recraft only.",
+  text_layout: "Structured spec for placing text at positions. Recraft V3 only.",
+  font_inputs: "Custom font specs for text rendering. Sourceful only.",
   super_resolution_references:
     "Up to 4 reference image URLs that enhance low-quality elements. Sourceful only.",
 };
+
+/** Concise per-model accepted-value summary, suitable for embedding in tool descriptions. */
+export function buildModelParamSummary(): string {
+  const lines: string[] = [];
+  for (const m of IMAGE_MODELS) {
+    const ar = m.acceptedAspectRatios?.join(", ") ?? "(unknown — pass-through)";
+    const sz = m.acceptedImageSizes?.join(", ") ?? "(unknown — pass-through)";
+    if (m.acceptedImageConfig.length === 0) {
+      lines.push(`- ${m.id}: imageConfig not supported.`);
+    } else {
+      lines.push(
+        `- ${m.id}:\n    aspectRatio: ${ar}\n    imageSize:   ${sz}`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
